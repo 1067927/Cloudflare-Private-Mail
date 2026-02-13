@@ -1,11 +1,10 @@
 /**
- * Cloudflare Private Temp Mail (Manual Refresh Version)
- * 开源地址: [你的 GitHub 地址会自动生成]
- * 作者: [你的名字]
+ * Cloudflare Private Temp Mail (V2.1 - 修复死循环版)
+ * 修复：拦截 favicon.ico 请求，防止浏览器无限跳转导致 KV 用量激增
  */
 
 export default {
-  // 1. 邮件解析与存储系统
+  // 1. 邮件接收与存储系统
   async email(message, env, ctx) {
     const id = Date.now().toString();
     const raw = await new Response(message.raw).text();
@@ -50,7 +49,7 @@ export default {
       body: parsed.html || "内容解析失败"
     };
 
-    // 存入 KV，设置 24 小时自动过期，防止爆存储
+    // 存入 KV，设置 24 小时过期
     await env.KV.put(`msg:${id}`, JSON.stringify(emailData), { expirationTtl: 86400 });
   },
 
@@ -58,7 +57,12 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // 一键物理删除 (节省 KV 空间)
+    // 🛑【关键修复】拦截浏览器图标请求，切断死循环 🛑
+    if (url.pathname === '/favicon.ico' || url.pathname === '/robots.txt') {
+      return new Response(null, { status: 404 });
+    }
+
+    // 一键物理删除
     if (url.searchParams.has("clear")) {
       const list = await env.KV.list({ prefix: "msg:" });
       for (const key of list.keys) { await env.KV.delete(key.name); }
@@ -71,9 +75,7 @@ export default {
       const randomPrefix = Math.random().toString(36).substring(2, 10);
       const newUrl = new URL(request.url);
       
-      // 🔴🔴🔴 关键配置项 🔴🔴🔴
-      // 如果你是自己部署，请将下面的 'yourdomain.com' 改成你自己的真实域名！
-      // 或者在 Cloudflare 后台设置 DOMAIN 环境变量。
+      // 🔴 请确保这里是你自己的域名 (如果还没设环境变量，请直接改这个字符串)
       const myDomain = env.DOMAIN || 'yourdomain.com'; 
       
       newUrl.searchParams.set("addr", `${randomPrefix}@${myDomain}`);
@@ -81,7 +83,7 @@ export default {
       return new Response("", { status: 302, headers: { "Location": newUrl.toString() } });
     }
 
-    // 获取最近 10 封邮件 (限制读取数量以节省额度)
+    // 获取最近 10 封邮件
     const list = await env.KV.list({ prefix: "msg:", limit: 10 });
     const messages = [];
     const results = await Promise.all(list.keys.map(k => env.KV.get(k.name)));
